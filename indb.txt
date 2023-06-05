@@ -1,0 +1,58 @@
+-- Initial database state
+initialDB :: Database
+initialDB =
+  Database
+    { users =
+        [ User
+            { 
+              userId = 1,
+              name = "admin",
+              username = "admin",
+              password = "123"
+            },
+             User
+            {
+              userId = 2,
+               name = "Cashier1",
+              username = "Cash",
+              password = "123"
+            }
+        ],
+      transactions = [],
+      inventory = [
+         Inventory
+            { itemId = 1,
+              itemName = "Pencil",
+              itemQuantity = 100,
+              itemPrice = 1000
+            },
+            Inventory
+            { itemId = 2,
+              itemName = "Book",
+              itemQuantity = 100,
+              itemPrice = 3000
+            },
+            Inventory
+            { itemId = 3,
+              itemName = "Staples",
+              itemQuantity = 100,
+              itemPrice = 5000
+            },
+            Inventory
+            { itemId = 4,
+              itemName = "Marker",
+              itemQuantity = 100,
+              itemPrice = 2000
+            },
+            Inventory
+            { itemId = 5,
+              itemName = "Table",
+              itemQuantity = 100,
+              itemPrice = 50000
+            }
+      ],
+      inventoryLog = [],
+      membership = [],
+      loginState = LoginState {authenticated = False, userLoginId=0},
+      transactionItems = []
+    }
