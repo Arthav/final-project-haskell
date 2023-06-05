@@ -224,15 +224,15 @@ goToPayment = do
       currentTime <- liftIO getCurrentTime
       let transactionDate = formatTime defaultTimeLocale "%Y-%m-%d" currentTime
       liftIO $ putStrLn "Payment completed."
-      db' <- get
-      let currentLoginState = loginState db'
+      let currentLoginState = loginState db
       let cashierId = userLoginId currentLoginState
       let transactionItemsList = [TransactionItem { purchasedItemId = purchasedItemId item, qtyBought = qtyBought item, price = price item } | item <- cartItems]
           newTransaction = Transaction { transactionId = transactionId, transactionDate = transactionDate, transactionItem = transactionItemsList, totalPrice = totalPrice, cashierId = cashierId }
-          updatedTransactions = newTransaction : transactions db'
-          updatedInventory = deductInventoryQuantity cartItems (inventory db')
-      put (db' { transactions = updatedTransactions, inventory = updatedInventory })
+          updatedTransactions = newTransaction : transactions db
+          updatedInventory = deductInventoryQuantity cartItems (inventory db)
+      put (db { transactions = updatedTransactions, inventory = updatedInventory })
       clearCart
+      liftIO $ saveAllData db
       pointsales
     2 -> pointsales
     _ -> do
@@ -304,6 +304,7 @@ manageInventory = do
           let updatedItem = item { itemQuantity = updatedQuantity, itemPrice = updatedPrice }
           updateInventoryItem itemId updatedItem
           liftIO $ putStrLn "Item quantity and price updated."
+          liftIO $ saveAllData db
           mainMenu
 
 updateInventoryItem :: Int -> Inventory -> StateT Database (MaybeT IO) ()
@@ -314,6 +315,7 @@ updateInventoryItem itemIdTarget updatedItem = do
   modify (\db' -> db' { inventory = updatedInventory })
   liftIO $ putStrLn (renderItemTable db)
   addToInventoryLog updatedItem
+  liftIO $ saveAllData db
 
 addToInventoryLog :: Inventory -> StateT Database (MaybeT IO) ()
 addToInventoryLog updatedItem = do
@@ -329,10 +331,12 @@ addToInventoryLog updatedItem = do
           changeDate = currentTime
         }
       updatedInventoryLog = inventoryLogEntry : invLog
-  modify (\db' -> db' { inventoryLog = updatedInventoryLog })   
+  modify (\db' -> db' { inventoryLog = updatedInventoryLog }) 
+  liftIO $ saveAllData db  
 
 mainMenu :: StateT Database (MaybeT IO) ()
 mainMenu = do
+  db <- readDBFromFile
   liftIO $ putStrLn "==== Main Menu ===="
   liftIO $ putStrLn "0. Exit"
   liftIO $ putStrLn "1. POS"
@@ -455,8 +459,6 @@ readDBFromFileIfExists filePath = do
   case maybeDb of
     Just db -> put db
     Nothing -> liftIO $ putStrLn "Failed to parse database from file."
-  db <- get  
-  liftIO $ print db 
 
 readDBFromInitialFile :: StateT Database (MaybeT IO) ()
 readDBFromInitialFile = do
