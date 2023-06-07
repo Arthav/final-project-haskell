@@ -4,7 +4,7 @@ import Control.Monad.Trans.State (StateT (runStateT), get, modify, put, state, e
 import Data.Data (Data, Typeable)
 import Data.Time
 import System.IO
-import Data.List (intercalate, maximumBy)
+import Data.List (intercalate, maximumBy, sortBy)
 import Data.Ord (comparing)
 import Control.Exception (catch)
 import System.IO.Error (isDoesNotExistError)
@@ -16,20 +16,11 @@ import Control.Monad (void)
 import Control.Monad.Trans.Class (lift)
 import Text.Read (readMaybe)
 
-
 data User = User
-  { 
-    userId :: Int,
+  { userId :: Int,
     name :: String,
     username :: String,
     password :: String
-  }
-  deriving (Show, Read)
-
-data Membership = Membership
-  { mname :: String,
-    mage :: Int,
-    phone :: String
   }
   deriving (Show, Read)
 
@@ -56,13 +47,17 @@ data LoginState = LoginState
   }
   deriving (Show, Read)
 
+data ActionLog = Insert | Update | Delete
+  deriving (Show, Eq, Read)
+
 data InventoryLog = InventoryLog
   { adminId :: Int,
-    priceBefore :: Double,
-    priceAfter :: Double,
+    priceBefore :: Int,
+    priceAfter :: Int,
     qtyBefore :: Int,
     qtyAfter :: Int,
-    changeDate :: UTCTime
+    changeDate :: UTCTime,
+    action :: ActionLog
   }
   deriving (Show, Read)
 
@@ -77,9 +72,8 @@ data Inventory = Inventory
 data Database = Database
   { users :: [User],
     transactions :: [Transaction],
-    inventory :: [Inventory],
-    inventoryLog :: [InventoryLog],
-    membership :: [Membership],
+    inventories :: [Inventory],
+    inventoryLogs :: [InventoryLog],
     loginState :: LoginState,
     transactionItems :: [TransactionItem]
   }deriving (Show, Read)
@@ -127,28 +121,29 @@ renderItemTable db =
   let border1 = "--------------------------------------------------------------------------------"
       header  = "ITEM ID\t\tITEM NAME\t\tAVAILABLE STOCK\t\tITEM PRICE"
       border2 = "--------------------------------------------------------------------------------"
-      rows    = map (\(Inventory itemId itemName itemQuantity itemPrice) -> show itemId ++ "\t\t" ++ itemName ++ "\t\t\t" ++ show itemQuantity ++ "\t\t\t" ++ show itemPrice) (inventory db)
+      sortedInventories = sortBy (comparing itemId) (inventories db)
+      rows    = map (\(Inventory itemId itemName itemQuantity itemPrice) -> show itemId ++ "\t\t" ++ itemName ++ "\t\t\t" ++ show itemQuantity ++ "\t\t\t" ++ show itemPrice) sortedInventories
   in unlines (border1:header:border2:rows)
 
 renderInventoryLogsTable :: Database -> String
 renderInventoryLogsTable db =
   let border1 = "----------------------------------------------------------------------------------------------"
-      header  = "ADMIN ID RESPONSIBLE\tPRICE BEFORE\tPRICE AFTER\tQTY BEFORE\tQTY AFTER\tCHANGE DATE"
+      header  = "ADMIN ID RESPONSIBLE\tPRICE BEFORE\tPRICE AFTER\tQTY BEFORE\tQTY AFTER\tCHANGE DATE\tACTION"
       border2 = "----------------------------------------------------------------------------------------------"
-      rows    = map formatInventoryLog (inventoryLog db)
+      rows    = map formatInventoryLog (inventoryLogs db)
       formattedRows = unlines rows
   in unlines [border1, header, border2, formattedRows]
   where
     formatInventoryLog :: InventoryLog -> String
-    formatInventoryLog (InventoryLog adminId priceBefore priceAfter qtyBefore qtyAfter changeDate) =
+    formatInventoryLog (InventoryLog adminId priceBefore priceAfter qtyBefore qtyAfter changeDate action) =
       let formattedDate = formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" changeDate
       in show adminId ++ "\t\t" ++ show priceBefore ++ "\t\t" ++ show priceAfter ++ "\t\t" ++
-         show qtyBefore ++ "\t\t" ++ show qtyAfter ++ "\t\t" ++ formattedDate
+         show qtyBefore ++ "\t\t" ++ show qtyAfter ++ "\t\t" ++ formattedDate ++ "\t\t" ++ show action
 
 addItemToCart :: StateT Database (MaybeT IO) ()
 addItemToCart = do
   db <- get
-  let inv = inventory db
+  let inv = inventories db
   liftIO $ putStrLn "==== ADD ITEM TO CART ===="
   liftIO $ putStrLn (renderItemTable db)
   itemId <- liftIO $ promptInt "Enter item ID: "
@@ -175,7 +170,7 @@ addItemToCart = do
 
 calculateTotalPrice :: Database -> Int
 calculateTotalPrice db =
-  let inv = inventory db
+  let inv = inventories db
       items = transactionItems db
       totalPrice = sum [calculateItemPrice itemId qty inv | TransactionItem itemId qty _ <- items]
   in totalPrice
@@ -229,8 +224,8 @@ goToPayment = do
       let transactionItemsList = [TransactionItem { purchasedItemId = purchasedItemId item, qtyBought = qtyBought item, price = price item } | item <- cartItems]
           newTransaction = Transaction { transactionId = transactionId, transactionDate = transactionDate, transactionItem = transactionItemsList, totalPrice = totalPrice, cashierId = cashierId }
           updatedTransactions = newTransaction : transactions db
-          updatedInventory = deductInventoryQuantity cartItems (inventory db)
-      put (db { transactions = updatedTransactions, inventory = updatedInventory })
+          updatedInventory = deductInventoryQuantity cartItems (inventories db)
+      put (db { transactions = updatedTransactions, inventories = updatedInventory })
       clearCart
       liftIO $ saveAllData db
       pointsales
@@ -287,56 +282,152 @@ pointsales = do
 manageInventory :: StateT Database (MaybeT IO) ()
 manageInventory = do
   db <- get
-  let inv = inventory db
   liftIO $ putStrLn "==== MANAGE INVENTORY ===="
+  liftIO $ putStrLn "1. Create new item"
+  liftIO $ putStrLn "2. Update item"
+  liftIO $ putStrLn "3. Delete item"
+  liftIO $ putStrLn "4. Read inventory"
+  liftIO $ putStrLn "0. Go back to the main menu"
+  choice <- liftIO $ promptInt "Enter your choice: "
+  case choice of
+    0 -> mainMenu
+    1 -> createItem
+    2 -> updateItem
+    3 -> deleteItem
+    4 -> readInventory
+    _ -> do
+      liftIO $ putStrLn "Invalid choice. Please try again."
+      manageInventory
+
+getNextItemId :: [Inventory] -> Int
+getNextItemId [] = 1
+getNextItemId items = maximum (map itemId items) + 1
+
+addItemToInventory :: Inventory -> [Inventory] -> [Inventory]
+addItemToInventory item inventory = item : inventory
+
+createItem :: StateT Database (MaybeT IO) ()
+createItem = do
+  db <- get
+  let inv = inventories db
+  liftIO $ putStrLn "==== CREATE ITEM ===="
+  itemName <- liftIO $ promptString "Enter item name: "
+  itemPrice <- liftIO $ promptInt "Enter item price: "
+  itemQuantity <- liftIO $ promptInt "Enter item quantity: "
+  let newItem = Inventory (getNextItemId inv) itemName itemPrice itemQuantity
+  modify (\s -> s { inventories = addItemToInventory newItem inv })
+  liftIO $ putStrLn "Item created."
+  addToInventoryLog newItem Insert
+  liftIO $ saveAllData db
+  manageInventory
+
+updateItem :: StateT Database (MaybeT IO) ()
+updateItem = do
+  db <- get
+  let inv = inventories db
+  liftIO $ putStrLn "==== UPDATE ITEM ===="
   liftIO $ putStrLn (renderItemTable db)
-  itemId <- liftIO $ promptInt "Enter item ID (or 0 to go back to the main menu): "
+  itemId <- liftIO $ promptInt "Enter item ID (or 0 to go back to the manage inventory menu): "
   if itemId == 0
-    then mainMenu
+    then manageInventory
     else do
-      updatedPrice <- liftIO $ promptInt "Enter item updated price: "
-      updatedQuantity <- liftIO $ promptInt "Enter item updated quantity: "
       case lookupInventoryItem itemId inv of
         Nothing -> do
           liftIO $ putStrLn "Invalid item ID. Please try again."
-          manageInventory
+          updateItem
         Just item -> do
-          let updatedItem = item { itemQuantity = updatedQuantity, itemPrice = updatedPrice }
+          let itemNames = maybeToString (getItemNameFromInventory itemId inv)
+          updatedPrice <- liftIO $ promptInt "Enter item updated price: "
+          updatedQuantity <- liftIO $ promptInt "Enter item updated quantity: "
+          let updatedItem = Inventory { itemId = itemId, itemQuantity = updatedQuantity, itemPrice = updatedPrice, itemName = itemNames }
           updateInventoryItem itemId updatedItem
           liftIO $ putStrLn "Item quantity and price updated."
+          addToInventoryLog updatedItem Update
           liftIO $ saveAllData db
-          mainMenu
+          manageInventory
+
+getItemNameFromInventory :: Int -> [Inventory] -> Maybe String
+getItemNameFromInventory _ [] = Nothing
+getItemNameFromInventory itemIds (inv:invs)
+  | itemIds == itemId inv = Just (itemName inv)
+  | otherwise = getItemNameFromInventory itemIds invs
+
+deleteInventoryItem :: Int -> [Inventory] -> [Inventory]
+deleteInventoryItem _ [] = []
+deleteInventoryItem itemIds (item:items)
+  | itemIds == itemId item = items
+  | otherwise = item : deleteInventoryItem itemIds items
+
+deleteItem :: StateT Database (MaybeT IO) ()
+deleteItem = do
+  db <- get
+  let inv = inventories db
+  liftIO $ putStrLn "==== DELETE ITEM ===="
+  liftIO $ putStrLn (renderItemTable db)
+  itemId <- liftIO $ promptInt "Enter item ID (or 0 to go back to the manage inventory menu): "
+  if itemId == 0
+    then manageInventory
+    else do
+      case lookupInventoryItem itemId inv of
+        Nothing -> do
+          liftIO $ putStrLn "Invalid item ID. Please try again."
+          deleteItem
+        Just deletedItem -> do
+          modify (\s -> s { inventories = deleteInventoryItem itemId inv })
+          liftIO $ putStrLn "Item deleted."
+          addToInventoryLog deletedItem Delete
+          liftIO $ saveAllData db
+          manageInventory
+
+readInventory :: StateT Database (MaybeT IO) ()
+readInventory = do
+  db <- get
+  let inv = inventories db
+  liftIO $ putStrLn "==== READ INVENTORY ===="
+  liftIO $ putStrLn (renderItemTable db)
+  manageInventory
 
 updateInventoryItem :: Int -> Inventory -> StateT Database (MaybeT IO) ()
 updateInventoryItem itemIdTarget updatedItem = do
-  db <- get
-  let inv = inventory db
-      updatedInventory = map (\item -> if itemIdTarget == itemId item then updatedItem else item) inv
-  modify (\db' -> db' { inventory = updatedInventory })
-  liftIO $ putStrLn (renderItemTable db)
-  addToInventoryLog updatedItem
-  liftIO $ saveAllData db
+  modify (\db -> db { inventories = updateInventoryItem' (inventories db) })
+  where
+    updateInventoryItem' :: [Inventory] -> [Inventory]
+    updateInventoryItem' inv = map (\item -> if itemIdTarget == itemId item then updatedItem else item) inv
 
-addToInventoryLog :: Inventory -> StateT Database (MaybeT IO) ()
-addToInventoryLog updatedItem = do
+getItemPrice :: Int -> [Inventory] -> Int
+getItemPrice _ [] = 0  
+getItemPrice itemIds (item : rest)
+  | itemIds == itemId item = itemPrice item
+  | otherwise = getItemPrice itemIds rest
+
+addToInventoryLog :: Inventory -> ActionLog -> StateT Database (MaybeT IO) ()
+addToInventoryLog updatedItem action = do
   currentTime <- liftIO getCurrentTime
   db <- get
-  let invLog = inventoryLog db
+  let currentLoginState = loginState db
+  let adminId = userLoginId currentLoginState
+  let invLog = inventoryLogs db
       inventoryLogEntry = InventoryLog
-        { adminId = 0, -- Set the appropriate admin ID
-          priceBefore = 0.0, -- Set the appropriate price before update
-          priceAfter = 0.0, -- Set the appropriate price after update
-          qtyBefore = itemQuantity updatedItem,
+        { adminId = adminId, -- Set the appropriate admin ID
+          priceBefore = case action of
+            Insert -> 0
+            Update -> getItemPrice (itemId updatedItem) (inventories db)
+            Delete -> getItemPrice (itemId updatedItem) (inventories db),
+          priceAfter = getItemPrice (itemId updatedItem) (inventories db),
+          qtyBefore = case action of
+            Insert -> 0
+            Update -> itemQuantity updatedItem
+            Delete -> itemQuantity updatedItem,
           qtyAfter = itemQuantity updatedItem,
-          changeDate = currentTime
+          changeDate = currentTime,
+          action = action
         }
       updatedInventoryLog = inventoryLogEntry : invLog
-  modify (\db' -> db' { inventoryLog = updatedInventoryLog }) 
-  liftIO $ saveAllData db  
+  modify (\db' -> db' { inventoryLogs = updatedInventoryLog }) 
+  liftIO $ saveAllData db
 
 mainMenu :: StateT Database (MaybeT IO) ()
 mainMenu = do
-  db <- readDBFromFile
   liftIO $ putStrLn "==== Main Menu ===="
   liftIO $ putStrLn "0. Exit"
   liftIO $ putStrLn "1. POS"
@@ -372,21 +463,24 @@ mainMenu = do
       mainMenu
 
 authenticateAndProceed :: Int -> StateT Database (MaybeT IO) ()
-authenticateAndProceed userId = do
-  db <- get
-  let updatedDb = db { loginState = LoginState { authenticated = True, userLoginId = userId } }
-  result <- lift $ runMaybeT $ lift $ runStateT mainMenu updatedDb
-  case result of
-    Just (_, finalDatabase) -> liftIO $ putStrLn "Application completed."
-    Nothing -> liftIO $ do
-      putStrLn "Application terminated unexpectedly."
-      exitFailure
+authenticateAndProceed userIds = do
+  db <- liftIO loadAllData
+  let matchingUsers = filter (\user -> userIds == userId user) (users db)
+  case matchingUsers of
+    [] -> do
+      liftIO $ putStrLn "User not found."
+      fail "User not found."
+    (user : _) -> do
+      let updatedDb = db { loginState = LoginState { authenticated = True, userLoginId = userIds } }
+      liftIO $ putStrLn $ "Logged in as " ++ name user ++ "."
+      put updatedDb
+      mainMenu
 
 authenticateUser :: StateT Database (MaybeT IO) (Maybe Int)
 authenticateUser = do
+  db <- get
   usernameInput <- liftIO $ promptString "Enter username: "
   passwordInput <- liftIO $ promptString "Enter password: "
-  db <- get
   let matchingUsers = filter (\user -> usernameInput == username user && passwordInput == password user) (users db)
   case matchingUsers of
     [user] -> return (Just (userId user))
@@ -412,31 +506,36 @@ initialDB =
             }
         ],
       transactions = [],
-      inventory = [],
-      inventoryLog = [],
-      membership = [],
+      inventories = [],
+      inventoryLogs = [],
       loginState = LoginState {authenticated = False, userLoginId=0},
       transactionItems = []
     }
 
 main :: IO ()
 main = do
+  putStrLn "====================================="
   putStrLn "POS AND INVENTORY..."
+  putStrLn "====================================="
   maybeResult <- runMaybeT (evalStateT readDBFromFile initialDB)
   case maybeResult of
     Just () -> do
       putStrLn "Read database from file successfully."
-      userVerification
+      maybeDb <- runMaybeT (evalStateT (get :: StateT Database (MaybeT IO) Database) initialDB)
+      case maybeDb of
+        Just db -> do
+          void $ runMaybeT (evalStateT (userVerification db) db)
+        Nothing -> putStrLn "Failed to retrieve database."
     Nothing -> putStrLn "Failed to read database from file."
 
-userVerification :: IO ()
-userVerification = do
-  maybeUserId <- runMaybeT (evalStateT authenticateUser initialDB)
+userVerification :: Database -> StateT Database (MaybeT IO) ()
+userVerification db = do
+  maybeUserId <- authenticateUser
   case maybeUserId of
-    Just userId -> void $ runMaybeT $ evalStateT (authenticateAndProceed (maybeToInt userId)) initialDB
+    Just userId -> void $ authenticateAndProceed userId
     Nothing -> do
-      putStrLn "Invalid credentials. Please try again."
-      userVerification
+      liftIO $ putStrLn "Invalid credentials. Please try again."
+      userVerification db
 
 printUsers :: [User] -> IO ()
 printUsers [] = putStrLn "No users in the database."
@@ -445,28 +544,23 @@ printUsers users = mapM_ (putStrLn . show) users
 saveAllData :: Database -> IO ()
 saveAllData db = writeFile "database.txt" (show db)
 
+loadAllData :: IO Database
+loadAllData = do
+  fileExists <- doesFileExist "database.txt"
+  if fileExists
+    then do
+      contents <- readFile "database.txt"
+      case readMaybe contents of
+        Just db -> return db
+        Nothing -> do
+          putStrLn "Invalid database file. Creating a new database."
+          return initialDB
+    else do
+      putStrLn "Database file not found. Creating a new database."
+      return initialDB
+
 readDBFromFile :: StateT Database (MaybeT IO) ()
-readDBFromFile = do
-  dbExists <- liftIO $ doesFileExist "database.txt"
-  if dbExists
-    then readDBFromFileIfExists "database.txt"
-    else readDBFromInitialFile 
-
-readDBFromFileIfExists :: FilePath -> StateT Database (MaybeT IO) ()
-readDBFromFileIfExists filePath = do
-  contents <- liftIO $ readFile filePath
-  let maybeDb = readMaybe contents :: Maybe Database
-  case maybeDb of
-    Just db -> put db
-    Nothing -> liftIO $ putStrLn "Failed to parse database from file."
-
-readDBFromInitialFile :: StateT Database (MaybeT IO) ()
-readDBFromInitialFile = do
-  contents <- liftIO $ readFile "initialDatabase.txt"
-  let maybeDb = readMaybe contents :: Maybe Database
-  case maybeDb of
-    Just db -> put db
-    Nothing -> liftIO $ putStrLn "Failed to parse database from file."
+readDBFromFile = put initialDB
 
 downloadTransaction :: StateT Database (MaybeT IO) ()
 downloadTransaction = do
@@ -495,3 +589,7 @@ maybeToInt maybeValue = case maybeValue of
   Just value -> value
   Nothing    -> 0 
 
+maybeToString :: Maybe String -> String
+maybeToString maybeValue = case maybeValue of
+  Just value -> value
+  Nothing    -> "" 
