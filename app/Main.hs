@@ -1,3 +1,5 @@
+module Main where
+
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.State (StateT (runStateT), get, modify, put, state, execStateT, evalStateT)
@@ -593,3 +595,4 @@ maybeToString :: Maybe String -> String
 maybeToString maybeValue = case maybeValue of
   Just value -> value
   Nothing    -> "" 
+
