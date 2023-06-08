@@ -31,6 +31,9 @@ executable final-project
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
-    build-depends:    base ^>=4.16.4.0
+    build-depends:    base ^>=4.16.4.0,
+                      Transformer,
+                      Time,
+                      
     hs-source-dirs:   app
     default-language: Haskell2010
