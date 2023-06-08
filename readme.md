@@ -21,3 +21,4 @@ This is a simple POS & Inventory Management System implemented in Haskell. It pr
    cd final-project
    ```
 
+3. Login with username: admin, password: 123
