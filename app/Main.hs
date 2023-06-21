@@ -570,7 +570,7 @@ downloadTransaction = do
   db <- get
   let transactionsData = transactions db
   let formattedData = formatTransactionData transactionsData
-  liftIO $ writeFile "transaction.txt" formattedData
+  liftIO $ writeFile "transactionLog.txt" formattedData
   liftIO $ putStrLn "Transaction database downloaded and saved successfully."
   mainMenu
 
